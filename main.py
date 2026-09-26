@@ -1,4 +1,6 @@
+import os
 import logging
+from flask import Flask, request
 from telegram import Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
@@ -9,26 +11,17 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ----------------------------------------------------
-# 1. BOT CONFIGURATION
-# ----------------------------------------------------
 TOKEN = "8645857316:AAEGj5aAi67zcSsmR6MK8f8ztGx_ssQnRmc"
-
-# Captured automatically when you send /start first
 MY_PERSONAL_TELEGRAM_ID = None
 
 logging.basicConfig(level=logging.WARNING)
 
-# ----------------------------------------------------
-# 2. PHONETIC TRANSLITERATION DICTIONARY
-# ----------------------------------------------------
+# --- TRANSLITERATION DICTIONARY ---
 LATIN_TO_AMHARIC = {
-    # Labialized/Diphthongs
     "hwo": "ኋ", "mwa": "ሟ", "rwa": "ሯ", "swa": "ሷ", "shwa": "ሿ",
     "qwa": "ቋ", "bwa": "ቧ", "twa": "ቷ", "chwa": "ቿ", "nwa": "ኗ",
     "kwa": "ኳ", "zwa": "ዟ", "dwa": "ዷ", "jwa": "ጇ", "gwa": "ጓ",
     "t'wa": "ጧ", "ch'wa": "ጯ", "fwa": "ፏ",
-    # Core series
     "ha": "ሀ", "hu": "ሁ", "hi": "ሂ", "haa": "ሃ", "he": "ሄ", "h": "ህ", "ho": "ሆ",
     "la": "ለ", "lu": "ሉ", "li": "ሊ", "laa": "ላ", "le": "ሌ", "l": "ል", "lo": "ሎ",
     "ma": "መ", "mu": "ሙ", "mi": "ሚ", "maa": "ማ", "me": "ሜ", "m": "ም", "mo": "ሞ",
@@ -59,7 +52,6 @@ LATIN_TO_AMHARIC = {
 
 SORTED_KEYS = sorted(LATIN_TO_AMHARIC.keys(), key=len, reverse=True)
 
-
 def convert_text(text: str) -> str:
     result = []
     i = 0
@@ -78,74 +70,51 @@ def convert_text(text: str) -> str:
             i += 1
     return "".join(result)
 
+# --- BOT SETUP ---
+app_bot = ApplicationBuilder().token(TOKEN).build()
 
-# ----------------------------------------------------
-# 3. HANDLERS AND NOTIFICATIONS
-# ----------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MY_PERSONAL_TELEGRAM_ID
     user = update.effective_user
-
     if MY_PERSONAL_TELEGRAM_ID is None:
         MY_PERSONAL_TELEGRAM_ID = user.id
-        print(f"[SYSTEM] Registered Owner ID: {user.id}")
-
-    print(f"[START COMMAND] User: {user.first_name} (@{user.username} | ID: {user.id})")
-
     try:
-        await update.message.reply_text(
-            "Selam! Send Latin Amharic text (e.g. 'selam endemin neh') to convert to Ge'ez."
-        )
-    except (TimedOut, NetworkError):
+        await update.message.reply_text("Selam! Send Latin Amharic text to convert to Ge'ez.")
+    except Exception:
         pass
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_text = update.message.text
-
-    print(f"\n[MSG FROM @{user.username} | ID: {user.id}]: {user_text}")
-
-    # Forward message copy to owner
     if MY_PERSONAL_TELEGRAM_ID and user.id != MY_PERSONAL_TELEGRAM_ID:
         try:
-            log_text = (
-                f"📩 *New User Message*\n"
-                f"From: {user.first_name} (@{user.username})\n"
-                f"ID: `{user.id}`\n\n"
-                f"*Text:* {user_text}"
-            )
-            await context.bot.send_message(
-                chat_id=MY_PERSONAL_TELEGRAM_ID,
-                text=log_text,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            print(f"[FORWARD ERROR] {e}")
-
+            log_text = f"📩 *New User Message*\nFrom: {user.first_name} (@{user.username})\nID: `{user.id}`\n\n*Text:* {user_text}"
+            await context.bot.send_message(chat_id=MY_PERSONAL_TELEGRAM_ID, text=log_text, parse_mode="Markdown")
+        except Exception:
+            pass
     converted = convert_text(user_text)
-
     try:
         await update.message.reply_text(converted)
-    except (TimedOut, NetworkError):
-        try:
-            await update.message.reply_text(converted)
-        except Exception as e:
-            print(f"[ERROR] Delivery failed: {e}")
+    except Exception:
+        pass
 
+app_bot.add_handler(CommandHandler("start", start))
+app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+# --- FLASK SERVER FOR WEBHOOKS ---
+server = Flask(__name__)
+
+@server.route("/", methods=["GET"])
+def index():
+    return "Bot is live via Webhook!", 200
+
+@server.route(f"/{TOKEN}", methods=["POST"])
+async def webhook():
+    json_data = request.get_json(force=True)
+    update = Update.de_json(json_data, app_bot.bot)
+    await app_bot.process_update(update)
+    return "OK", 200
 
 if __name__ == "__main__":
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .read_timeout(60)
-        .write_timeout(60)
-        .connect_timeout(60)
-        .build()
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Bot is live on server!\n")
-    app.run_polling(poll_interval=2.0)
+    port = int(os.environ.get("PORT", 8080))
+    server.run(host="0.0.0.0", port=port)
